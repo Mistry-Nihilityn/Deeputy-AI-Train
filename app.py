@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 
-# 初始化分类器（使用单例模式，避免重复加载）
+# 初始化分类器
 class ClassifierSingleton:
     _instance = None
     _classifier = None
@@ -91,7 +91,7 @@ def prepare_dialogue_context(dialogue_history: List[Dict]) -> str:
     if not dialogue_history:
         return ""
 
-    # 取最后几条对话作为上下文（可以根据需要调整数量）
+    # 取最后几条对话作为上下文
     recent_dialogues = dialogue_history[-4:]  # 取最近4条
 
     # 构建上下文文本
@@ -99,7 +99,8 @@ def prepare_dialogue_context(dialogue_history: List[Dict]) -> str:
     for i, turn in enumerate(recent_dialogues):
         role_map = {
             'customer': '客户',
-            'user': '客服'
+            'user': '客服',
+            'system': '系统'
         }
         role = role_map.get(turn['role'], turn['role'])
         content = turn['content']
@@ -141,7 +142,7 @@ def classify():
             }), 400
 
         # 获取对话历史
-        dialogue_history = data.get('dialogue', [])
+        dialogue_history = data.get('dialogue', None)
         if not dialogue_history:
             return jsonify({
                 'success': False,
@@ -208,7 +209,7 @@ def classify():
         logger.info(f"输入文本: {input_text}")
         logger.info(f"候选标签数量: {len(candidate_labels)}")
 
-        classifier = classifier_singleton
+        classifier = classifier_singleton.get_classifier()
 
         if not classifier:
             return jsonify({
@@ -223,7 +224,7 @@ def classify():
             'success': True,
             'message': "AI recommendation succeeded.",
             'data': {
-                'labels': script_ids,
+                'ids': script_ids,
                 'scores': [float(score) for score in result['scores']]
             }
         })
@@ -305,9 +306,8 @@ def test_endpoint():
             {"role": "user", "time": "2026-01-10 21:29:49.804", "content": "不客气，很高兴为您服务"}
         ]
     }
-
     return jsonify(test_data)
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=8091, debug=True)
