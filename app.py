@@ -6,12 +6,14 @@ from modelscope.pipelines import pipeline
 import logging
 from typing import Dict, List, Any, Optional
 import re
+from zai import ZhipuAiClient
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+client = ZhipuAiClient(api_key="c08862d32c657c00c90517a3d2d4764a.SVhS0RqKR1WIC1Uu")
 
 
 # 初始化分类器
@@ -204,7 +206,7 @@ def classify():
 
         # 添加对话上下文
         context = prepare_dialogue_context(dialogue_history)
-        input_text = f"{context} 客户说: {last_customer_message}"
+        input_text = f"{context} 客户说: {last_customer_message}; 请判断客服应该如何回复"
 
         logger.info(f"输入文本: {input_text}")
         logger.info(f"候选标签数量: {len(candidate_labels)}")
@@ -218,7 +220,7 @@ def classify():
             }), 500
 
         # 执行分类
-        result = classifier(input_text, candidate_labels=candidate_labels)
+        result = classifier(input_text, candidate_labels=candidate_labels, multi_label=True)
 
         return jsonify({
             'success': True,
@@ -237,76 +239,125 @@ def classify():
         }), 500
 
 
-@app.route('/test', methods=['GET'])
-def test_endpoint():
-    """测试接口"""
-    test_data = {
-        "nodeScript": [
-            {
-                "id": "node_start_001",
-                "name": "打招呼",
-                "summary": "向顾客打招呼",
-                "content": "{getCustomerName}先生您好,欢迎致电智深电信,我是客服Mistry,请问有什么可以帮您？",
-                "type": "NODE",
-                "associateId": "c9a59191-dbb2-4058-af56-02c630018340",
-                "tag": "节点",
-                "priority": 50,
-                "enabled": True,
-                "score": None
-            },
-            {
-                "id": "node_start_002",
-                "name": "打招呼",
-                "summary": "向顾客打招呼",
-                "content": "{getCustomerName}女士您好,欢迎致电智深电信,我是客服Mistry,请问有什么可以帮您？",
-                "type": "NODE",
-                "associateId": "c9a59191-dbb2-4058-af56-02c630018340",
-                "tag": "节点",
-                "priority": 50,
-                "enabled": True,
-                "score": None
-            }
-        ],
-        "feedbackScript": [],
-        "commonScript": [
-            {
-                "id": "common-audio-clarify-001",
-                "name": "通用-听不清请重复",
-                "summary": "当未听清用户表述时，请用户重述",
-                "content": "不好意思，刚才这句我没听清楚，麻烦您再说一遍好吗？",
-                "type": "COMMON",
-                "associateId": None,
-                "tag": "通用,澄清,听不清,ASR",
-                "priority": 18,
-                "enabled": True,
-                "score": None
-            },
-            {
-                "id": "common-bye-001",
-                "name": "通用-道别结束",
-                "summary": "标准结束语与回访提示",
-                "content": "好的，今天先为您处理到这里。如后续还有问题，欢迎随时联系我们。祝您生活愉快，再见！",
-                "type": "COMMON",
-                "associateId": None,
-                "tag": "通用,道别,结束",
-                "priority": 50,
-                "enabled": True,
-                "score": None
-            }
-        ],
+@app.route('/navigate', methods=['POST'])
+def navigate():
+    """
+    零样本分类接口
+    输入格式:
+    {
+        "nodeScript": [...],
+        "feedbackScript": [...],
+        "commonScript": [...],
         "dialogue": [
-            {"role": "customer", "time": "2026-01-10 21:27:02.804", "content": "你好，我需要办理业务"},
-            {"role": "user", "time": "2026-01-10 21:27:19.804",
-             "content": "您好，很高兴为您服务，请问有什么可以帮助您的？"},
-            {"role": "customer", "time": "2026-01-10 21:27:44.804", "content": "我想了解一下我的消费记录"},
-            {"role": "user", "time": "2026-01-10 21:28:06.804", "content": "好的，我来帮您查询消费信息"},
-            {"role": "customer", "time": "2026-01-10 21:28:24.804", "content": "这笔费用不合理，我想退款"},
-            {"role": "user", "time": "2026-01-10 21:28:54.804", "content": "好的，请稍等，我马上为您处理退款"},
-            {"role": "customer", "time": "2026-01-10 21:29:20.804", "content": "好的，谢谢"},
-            {"role": "user", "time": "2026-01-10 21:29:49.804", "content": "不客气，很高兴为您服务"}
+            {"role": "customer", "time": "...", "content": "..."},
+            ...
         ]
     }
-    return jsonify(test_data)
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': '请求体不能为空'
+            }), 400
+
+        dialogue_history = data.get('dialogue', None)
+        if not dialogue_history:
+            return jsonify({
+                'success': False,
+                'error': '对话历史不能为空'
+            }), 400
+
+        out_edges = data.get('outEdges', [])
+        out_edges_ids = [s["edgeId"] for s in out_edges]
+
+        if len(out_edges_ids) == 0:
+            return jsonify({
+                'success': False,
+                'error': '没有可用的话术'
+            }), 400
+
+        candidate_labels = []
+        for edge in out_edges:
+            texts = f"节点名：{edge['nodeName']}，边名:{edge['edgeName']}"
+            candidate_labels.append(texts)
+
+        last_customer_message = None
+        for turn in reversed(dialogue_history):
+            if turn.get('role') == 'customer':
+                last_customer_message = turn.get('content', '')
+                break
+
+        if not last_customer_message:
+            last_customer_message = dialogue_history[-1].get('content', '') if dialogue_history else ""
+
+        context = prepare_dialogue_context(dialogue_history)
+        input_text = f"{context} 客户说: {last_customer_message}; 请判断客户需求，应该走哪条边"
+
+        logger.info(f"输入文本: {input_text}")
+        logger.info(f"候选标签数量: {len(candidate_labels)}")
+
+        classifier = classifier_singleton.get_classifier()
+
+        if not classifier:
+            return jsonify({
+                'success': False,
+                'error': '分类器未初始化'
+            }), 500
+
+        result = classifier(input_text, candidate_labels=candidate_labels, multi_label=True)
+
+        return jsonify({
+            'success': True,
+            'message': "AI recommendation succeeded.",
+            'data': {
+                'ids': out_edges_ids,
+                'scores': [float(score) for score in result['scores']]
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"分类处理失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# @app.route('/chat', methods=['POST'])
+# def chat():
+#     data = request.json
+#     if not data or 'messages' not in data:
+#         return jsonify({"error": "没有找到messages字段"}), 400
+#
+#     messages = data['messages']
+#
+#     # 创建流式响应
+#     def generate():
+#         # 创建流式请求
+#         stream = client.chat.completions.create(
+#             model="glm-4-plus",
+#             messages=[{"role": "system", "content": prompt.RMS_PROMPT}] + messages,
+#             tools=[
+#                 {
+#                     "type": "retrieval",
+#                     "retrieval": {
+#                         "knowledge_id": "1943113296035172352",
+#                         "prompt_template": f"从文档\n\"\"\"\n{{knowledge}}\n\"\"\"\n中找与用户输入{messages}相关的内容，能找到就结合文档语句和上下文进行回答，找不到答案就用自身知识回答，但不得照抄文档。\n请注意，用户不是开发者，请以助手的身份进行回答，请不要出现诸如“根据您提供的文档”的表述，不要复述问题，直接开始回答。"
+#                     }
+#                 }
+#             ],
+#             stream=True
+#         )
+#
+#         # 逐块发送响应
+#         for chunk in stream:
+#             if content := chunk.choices[0].delta.content:
+#                 # print(content)
+#                 yield content
+#
+#     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
 
 
 if __name__ == '__main__':
