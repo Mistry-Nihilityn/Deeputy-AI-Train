@@ -1,12 +1,15 @@
 import json
 from pprint import pprint
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from modelscope.pipelines import pipeline
 import logging
 from typing import Dict, List, Any, Optional
 import re
 from zai import ZhipuAiClient
+
+import prompt
+from prompt import OPTIMIZE_TEMPLATE
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -324,40 +327,66 @@ def navigate():
             'error': str(e)
         }), 500
 
-# @app.route('/chat', methods=['POST'])
-# def chat():
-#     data = request.json
-#     if not data or 'messages' not in data:
-#         return jsonify({"error": "没有找到messages字段"}), 400
-#
-#     messages = data['messages']
-#
-#     # 创建流式响应
-#     def generate():
-#         # 创建流式请求
-#         stream = client.chat.completions.create(
-#             model="glm-4-plus",
-#             messages=[{"role": "system", "content": prompt.RMS_PROMPT}] + messages,
-#             tools=[
-#                 {
-#                     "type": "retrieval",
-#                     "retrieval": {
-#                         "knowledge_id": "1943113296035172352",
-#                         "prompt_template": f"从文档\n\"\"\"\n{{knowledge}}\n\"\"\"\n中找与用户输入{messages}相关的内容，能找到就结合文档语句和上下文进行回答，找不到答案就用自身知识回答，但不得照抄文档。\n请注意，用户不是开发者，请以助手的身份进行回答，请不要出现诸如“根据您提供的文档”的表述，不要复述问题，直接开始回答。"
-#                     }
-#                 }
-#             ],
-#             stream=True
-#         )
-#
-#         # 逐块发送响应
-#         for chunk in stream:
-#             if content := chunk.choices[0].delta.content:
-#                 # print(content)
-#                 yield content
-#
-#     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
+def summarize_dialogue(dialogue):
+    user_contents = []
+    for entry in dialogue:
+        if entry.get('role') == 'user' and entry.get('content'):
+            user_contents.append(entry['content'][:100])
+    return "\n".join(user_contents) if user_contents else "用户尚未发言"
+
+def summarize_intents(outEdges, top_k=3):
+    sorted_edges = sorted(outEdges, key=lambda x: x.get('score', 0), reverse=True)
+    summary_lines = []
+    for i, edge in enumerate(sorted_edges[:top_k]):
+        node_name = edge.get('nodeName', '未知意图')
+        score = edge.get('score', 0)
+        summary_lines.append(f"{i+1}. {node_name} (相关度: {score:.3f})")
+    return "\n".join(summary_lines)
+
+
+@app.route('/optimize', methods=['POST'])
+def optimize():
+    data = request.get_json()
+    if not data:
+        return jsonify({
+            'success': False,
+            'error': '请求体不能为空'
+        }), 400
+
+    print(data)
+
+    dialogue = data.get('dialogue', [])
+    current_script = data.get('currentScript', '')
+    outEdges = data.get('outEdges', [])
+
+    dialogue_summary = summarize_dialogue(dialogue)
+    intent_summary = summarize_intents(outEdges, top_k=3)
+
+    message = [
+        {
+            "role": "user",
+            "content": OPTIMIZE_TEMPLATE.format(
+                dialogue_summary=dialogue_summary,
+                current_script=current_script,
+                intent_summary=intent_summary
+            )
+        }
+    ]
+
+    def generate():
+        stream = client.chat.completions.create(
+            model="glm-4.6v",
+            messages=[{"role": "system", "content": prompt.OPTIMIZE_PROMPT}] + message,
+            stream=True,
+            thinking={"type": "disabled"}
+        )
+
+        for chunk in stream:
+            if content := chunk.choices[0].delta.content:
+                yield content
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 if __name__ == '__main__':
