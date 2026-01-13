@@ -223,13 +223,16 @@ def classify():
             }), 500
 
         # 执行分类
+        cvt = {label: edge_id for (label, edge_id) in zip(candidate_labels, script_ids)}
+        print(candidate_labels)
         result = classifier(input_text, candidate_labels=candidate_labels, multi_label=True)
+        print(result)
 
         return jsonify({
             'success': True,
             'message': "AI recommendation succeeded.",
             'data': {
-                'ids': script_ids,
+                'ids': [cvt[label] for label in candidate_labels],
                 'scores': [float(score) for score in result['scores']]
             }
         })
@@ -309,13 +312,16 @@ def navigate():
                 'error': '分类器未初始化'
             }), 500
 
+        cvt = {label: edge_id for (label, edge_id) in zip(candidate_labels, out_edges_ids)}
+        print(candidate_labels)
         result = classifier(input_text, candidate_labels=candidate_labels, multi_label=True)
+        print(result)
 
         return jsonify({
             'success': True,
             'message': "AI recommendation succeeded.",
             'data': {
-                'ids': out_edges_ids,
+                'ids': [cvt[label] for label in candidate_labels],
                 'scores': [float(score) for score in result['scores']]
             }
         })
